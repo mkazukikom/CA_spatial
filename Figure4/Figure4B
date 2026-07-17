@@ -1,0 +1,86 @@
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(ggrepel)
+  library(dplyr)
+})
+
+# ==== 設定 ====
+INPUT_CSV  <- "DEG_HDBEC_ab_vs_ig.csv"
+OUTPUT_DIR <- "."
+
+# 有意性の閾値
+P_CUTOFF    <- 0.05
+LFC_CUTOFF  <- 1
+TOP_LABEL_N <- 15
+
+# ==== データ読み込み ====
+hd <- read.csv(INPUT_CSV)
+cat(sprintf("Loaded: %d genes\n", nrow(hd)))
+cat("Columns:", paste(colnames(hd), collapse=", "), "\n")
+
+hd <- hd[!is.na(hd$pvalue) & !is.na(hd$log2FoldChange), ]
+
+# 色分類（n=2 vs 2 なので padj は緩め: pvalueベース）
+hd$color <- case_when(
+  hd$pvalue < P_CUTOFF & hd$log2FoldChange >  LFC_CUTOFF ~ "Up",
+  hd$pvalue < P_CUTOFF & hd$log2FoldChange < -LFC_CUTOFF ~ "Down",
+  TRUE ~ "NS"
+)
+
+n_up   <- sum(hd$color == "Up")
+n_down <- sum(hd$color == "Down")
+n_sig  <- n_up + n_down
+
+cat(sprintf("\nUp   (anti-CD320 > IgG): %d\n", n_up))
+cat(sprintf("Down (anti-CD320 < IgG): %d\n", n_down))
+cat(sprintf("Total significant:       %d\n", n_sig))
+
+# ラベル用トップ遺伝子
+top_label <- hd |>
+  filter(color != "NS") |>
+  arrange(pvalue) |>
+  head(TOP_LABEL_N)
+
+# ==== プロット ====
+BASE <- 7
+theme_AR <- function(base=BASE) {
+  theme_bw(base_size=base) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major=element_line(color="grey93", linewidth=0.25),
+        axis.text=element_text(size=base-1, color="black"),
+        axis.title=element_text(size=base, color="black"),
+        plot.title=element_text(size=base+1, face="bold", hjust=0),
+        legend.text=element_text(size=base-1),
+        legend.title=element_text(size=base-1, face="bold"),
+        legend.key.size=unit(0.25, "cm"),
+        axis.line=element_line(linewidth=0.3),
+        panel.border=element_rect(linewidth=0.3, color="grey50"))
+}
+
+p <- ggplot(hd, aes(log2FoldChange, -log10(pvalue), color=color)) +
+  geom_point(size=0.5, alpha=0.4) +
+  geom_text_repel(data=top_label, aes(label=gene),
+                  size=2.2, max.overlaps=20, fontface="italic",
+                  segment.size=0.2, box.padding=0.2,
+                  min.segment.length=0) +
+  scale_color_manual(values=c("Up"="#d73027",
+                                "Down"="#4575b4",
+                                "NS"="grey75"),
+                     name=NULL,
+                     breaks=c("Up","Down","NS"),
+                     labels=c(sprintf("Up (n=%d)", n_up),
+                              sprintf("Down (n=%d)", n_down),
+                              "NS")) +
+  geom_vline(xintercept=c(-LFC_CUTOFF, LFC_CUTOFF),
+             linetype="dashed", color="grey50", linewidth=0.25) +
+  geom_hline(yintercept=-log10(P_CUTOFF),
+             linetype="dashed", color="grey50", linewidth=0.25) +
+  annotate("text", x=Inf, y=Inf,
+           label=sprintf("p<%.2f, |logFC|>%d\nTotal: %d genes",
+                         P_CUTOFF, LFC_CUTOFF, n_sig),
+           size=2.2, hjust=1.05, vjust=1.2, color="grey30") +
+  labs(x="log2 fold change (anti-CD320 vs IgG ctrl)",
+       y=expression(-log[10](P))) +
+  theme_AR() +
+  theme(legend.position="top",
+        legend.margin=margin(0, 0, -3, 0))
