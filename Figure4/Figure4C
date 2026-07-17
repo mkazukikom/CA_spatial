@@ -1,0 +1,124 @@
+suppressPackageStartupMessages({
+  library(fgsea)
+  library(org.Hs.eg.db)
+  library(AnnotationDbi)
+  library(ggplot2)
+  library(dplyr)
+  library(stringr)
+})
+
+# ==== 設定 ====
+INPUT_DEG_CSV <- "DEG_HDBEC_ab_vs_ig.csv"
+INPUT_GMT     <- "h.all.v2023.2.Hs.entrez.gmt"
+OUTPUT_DIR    <- "."
+
+TOP_N          <- 10
+FGSEA_MIN_SIZE <- 10
+FGSEA_MAX_SIZE <- 500
+FGSEA_NPERM    <- 10000
+SEED           <- 20260509
+
+# IFN/炎症関連のキーワード（強調表示用）
+IFN_KEYWORDS <- "INTERFERON|INFLAMMATORY|TNFA|IL6"
+
+# ==== Step 1: DEG読み込み ====
+cat("=== Step 1: Load DEG ===\n")
+deg <- read.csv(INPUT_DEG_CSV)
+cat(sprintf("DEG rows: %d\n", nrow(deg)))
+cat("Columns:", paste(colnames(deg), collapse=", "), "\n")
+
+deg <- deg[!is.na(deg$pvalue) & !is.na(deg$log2FoldChange), ]
+
+# ==== Step 2: SYMBOL → ENTREZID ====
+cat("\n=== Step 2: SYMBOL → ENTREZID (human) ===\n")
+map <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys       = unique(deg$gene),
+  keytype    = "SYMBOL",
+  columns    = c("SYMBOL","ENTREZID")
+)
+map <- map[!is.na(map$ENTREZID) & !duplicated(map$SYMBOL), ]
+deg2 <- merge(deg, map, by.x="gene", by.y="SYMBOL")
+cat(sprintf("After ENTREZ mapping: %d genes\n", nrow(deg2)))
+
+# ==== Step 3: rank statistic ====
+cat("\n=== Step 3: Build ranked stats ===\n")
+stat <- deg2$log2FoldChange * (-log10(deg2$pvalue + 1e-300))
+names(stat) <- as.character(deg2$ENTREZID)
+stat <- sort(stat[!duplicated(names(stat))], decreasing=TRUE)
+cat(sprintf("Ranked genes: %d\n", length(stat)))
+cat(sprintf("Range: %.2f to %.2f\n", min(stat), max(stat)))
+
+# ==== Step 4: Hallmark GMT読み込み ====
+cat("\n=== Step 4: Load Hallmark pathways ===\n")
+pathways <- fgsea::gmtPathways(INPUT_GMT)
+cat(sprintf("Hallmark pathways: %d\n", length(pathways)))
+
+# ==== Step 5: fgsea 実行 ====
+cat("\n=== Step 5: Run fgsea ===\n")
+set.seed(SEED)
+fg <- fgsea(pathways    = pathways,
+             stats       = stat,
+             minSize     = FGSEA_MIN_SIZE,
+             maxSize     = FGSEA_MAX_SIZE,
+             nPermSimple = FGSEA_NPERM)
+
+fg_df <- as.data.frame(fg)
+fg_df$leadingEdge <- sapply(fg_df$leadingEdge, paste, collapse=";")
+fg_df <- fg_df[order(fg_df$pval), ]
+
+cat(sprintf("\nSignificant activated pathways (padj<0.05 & NES>0): %d\n",
+             sum(fg_df$padj < 0.05 & fg_df$NES > 0, na.rm=TRUE)))
+cat("Top 10 activated:\n")
+print(head(fg_df[fg_df$NES > 0, c("pathway","NES","pval","padj")], 10))
+
+# ==== Step 6: 結果保存 ====
+write.csv(fg_df,
+          file.path(OUTPUT_DIR, "GSEA_Hallmark_HDBEC.csv"),
+          row.names=FALSE)
+cat("\nSaved: GSEA_Hallmark_HDBEC.csv\n")
+
+# ==== Step 7: Figure 4C 作成 ====
+cat("\n=== Step 7: Build Figure 4C ===\n")
+
+hall_top <- fg_df |>
+  filter(!is.na(pval), NES > 0) |>
+  arrange(pval) |>
+  head(TOP_N) |>
+  mutate(pathway_short = gsub("HALLMARK_", "", pathway),
+         pathway_wrap  = str_wrap(pathway_short, 22),
+         is_ifn        = grepl(IFN_KEYWORDS, pathway_short))
+
+cat(sprintf("Top %d activated pathways:\n", nrow(hall_top)))
+print(hall_top[, c("pathway_short","NES","pval","padj","is_ifn")])
+
+BASE <- 7
+theme_AR <- function(base=BASE) {
+  theme_bw(base_size=base) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major=element_line(color="grey93", linewidth=0.25),
+        axis.text=element_text(size=base-1, color="black"),
+        axis.title=element_text(size=base, color="black"),
+        plot.title=element_text(size=base+1, face="bold", hjust=0),
+        legend.text=element_text(size=base-1),
+        legend.title=element_text(size=base-1, face="bold"),
+        legend.key.size=unit(0.25, "cm"),
+        axis.line=element_line(linewidth=0.3),
+        panel.border=element_rect(linewidth=0.3, color="grey50"))
+}
+
+p <- ggplot(hall_top,
+            aes(x=reorder(pathway_wrap, NES), y=NES, fill=is_ifn)) +
+  geom_col(width=0.7) +
+  coord_flip() +
+  scale_fill_manual(values=c("FALSE"="grey60","TRUE"="#d73027"),
+                    labels=c("FALSE"="Other",
+                              "TRUE"="IFN / Inflammation"),
+                    name=NULL) +
+  geom_hline(yintercept=0, linewidth=0.3, color="grey40") +
+  labs(x=NULL, y="NES",
+       title="Activated Hallmark GSEA") +
+  theme_AR() +
+  theme(axis.text.y=element_text(size=6),
+        legend.position="top",
+        legend.margin=margin(0, 0, -3, 0))
