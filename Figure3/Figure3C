@@ -1,0 +1,107 @@
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(pheatmap)
+  library(RColorBrewer)
+})
+
+# ==== 設定 ====
+INPUT_SE   <- "02_se_explored.rds"
+INPUT_IFN  <- "IFN_core_genes.rds"
+OUTPUT_DIR <- "."
+
+patient_label_map <- c(
+  "10567" = "P1",
+  "6895"  = "P2",
+  "7928"  = "P3",
+  "9489"  = "N1",
+  "6580"  = "N2",
+  "6873"  = "N3"
+)
+
+# ==== データ読み込み ====
+se <- readRDS(INPUT_SE)
+cd <- as.data.frame(colData(se))
+mat <- assay(se, "log2")
+
+ifn_obj <- readRDS(INPUT_IFN)
+core_h <- ifn_obj$conserved
+hits_ifn <- intersect(core_h, rownames(mat))
+
+cat(sprintf("IFN core genes: %d (conserved)\n", length(core_h)))
+cat(sprintf("Available in GeoMx: %d\n", length(hits_ifn)))
+cat(sprintf("AOIs: %d\n", ncol(mat)))
+
+# ==== Z-score ====
+mat_ifn <- mat[hits_ifn, ]
+mat_z <- t(scale(t(mat_ifn)))
+
+cd$patient_label <- patient_label_map[as.character(cd$Patient_ID)]
+
+# 列名を "P1_artery_bcell" に変更
+new_colnames <- paste(cd$patient_label[match(colnames(mat_z), cd$AOI_ID)],
+                      cd$Tissue[match(colnames(mat_z), cd$AOI_ID)],
+                      sep="_")
+colnames(mat_z) <- new_colnames
+
+# ==== アノテーション ====
+anno_col <- data.frame(
+  ROI  = factor(cd$Tissue,
+                levels=c("artery_bcell","artery_endothelium",
+                         "vein","vasculature")),
+  CD320 = factor(ifelse(cd$Antibody == "Negative",
+                        "seronegative", "seropositive"),
+                 levels=c("seronegative","seropositive")),
+  row.names = new_colnames
+)
+
+ann_colors <- list(
+  ROI = c(
+    "artery_bcell"       = "#E41A1C",
+    "artery_endothelium" = "#FF7F00",
+    "vein"               = "#377EB8",
+    "vasculature"        = "#4DAF4A"
+  ),
+  CD320 = c(
+    "seronegative" = "#4DAF4A",
+    "seropositive" = "#984EA3"
+  )
+)
+
+# ==== 遺伝子名をイタリック化: labels_rowに expression を渡す ====
+italic_labels <- lapply(rownames(mat_z), function(g) {
+  bquote(italic(.(g)))
+})
+
+# ==== ヒートマップ ====
+color_palette <- colorRampPalette(c("#4575b4","white","#d73027"))(100)
+breaks <- seq(-3, 3, length.out=101)
+
+draw_heatmap <- function() {
+  pheatmap(mat_z,
+           annotation_col    = anno_col,
+           annotation_colors = ann_colors,
+           labels_row        = as.expression(italic_labels),
+           show_rownames     = TRUE,
+           show_colnames     = TRUE,
+           fontsize_row      = 5,
+           fontsize_col      = 6,
+           fontsize          = 7,
+           cluster_cols      = TRUE,
+           cluster_rows      = TRUE,
+           color             = color_palette,
+           breaks            = breaks,
+           treeheight_row    = 20,
+           treeheight_col    = 25,
+           border_color      = NA,
+           main              = "IFN core 56 genes (z-score) across all AOIs")
+}
+
+pdf(file.path(OUTPUT_DIR, "Figure3C_Heatmap.pdf"),
+    width=7.0, height=8.0)
+draw_heatmap()
+invisible(dev.off())
+
+png(file.path(OUTPUT_DIR, "Figure3C_Heatmap.png"),
+    width=7.0, height=8.0, units="in", res=300)
+draw_heatmap()
+invisible(dev.off())
