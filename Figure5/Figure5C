@@ -1,0 +1,118 @@
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(ggplot2)
+  library(dplyr)
+})
+
+# ==== 設定 ====
+INPUT_RDS  <- "02_se_explored.rds"
+INPUT_IFN  <- "IFN_core_genes.rds"
+OUTPUT_DIR <- "."
+
+# ==== データ読み込み ====
+se <- readRDS(INPUT_RDS)
+cd <- as.data.frame(colData(se))
+mat <- assay(se, "log2")
+
+ifn_obj <- readRDS(INPUT_IFN)
+ifn_core <- ifn_obj$conserved
+ifn_hits <- intersect(ifn_core, rownames(mat))
+
+hist_genes <- grep("^H[1234][A-Z0-9]|^H[0-9]-", rownames(mat), value=TRUE)
+
+cat(sprintf("IFN core genes in data: %d / %d\n",
+             length(ifn_hits), length(ifn_core)))
+cat(sprintf("Histone genes in data:  %d\n", length(hist_genes)))
+
+# ==== 各遺伝子について「陽性平均 − 陰性平均」を計算 ====
+calc_diff <- function(genes, idx) {
+  m  <- mat[genes, idx, drop=FALSE]
+  ab <- as.character(cd$Antibody[idx])
+  diffs <- numeric(nrow(m))
+  for (i in seq_len(nrow(m))) {
+    expr <- m[i, ]
+    diffs[i] <- mean(expr[ab == "Positive"]) - mean(expr[ab == "Negative"])
+  }
+  diffs
+}
+
+art_idx <- which(cd$vessel_class == "artery")
+ves_idx <- which(cd$vessel_class == "vessel")
+
+ifn_art  <- calc_diff(ifn_hits,   art_idx)
+ifn_ves  <- calc_diff(ifn_hits,   ves_idx)
+hist_art <- calc_diff(hist_genes, art_idx)
+hist_ves <- calc_diff(hist_genes, ves_idx)
+
+# ==== Sign test（binomial two-sided） ====
+make_summary <- function(d, region, set_name) {
+  d <- d[!is.na(d) & d != 0]
+  n_pos <- sum(d > 0)
+  n_neg <- sum(d < 0)
+  n_tot <- n_pos + n_neg
+  bt <- binom.test(n_pos, n_tot, p = 0.5)
+  data.frame(
+    set     = set_name,
+    region  = region,
+    pct_pos = 100 * n_pos / n_tot,
+    n_pos   = n_pos,
+    n_total = n_tot,
+    p       = bt$p.value
+  )
+}
+
+summary_df <- bind_rows(
+  make_summary(ifn_art,  "Artery",         "IFN core (n=56)"),
+  make_summary(ifn_ves,  "Vein/Vasculature","IFN core (n=56)"),
+  make_summary(hist_art, "Artery",         "Histone (n=73)"),
+  make_summary(hist_ves, "Vein/Vasculature","Histone (n=73)")
+) |>
+  mutate(
+    set         = factor(set, levels=c("IFN core (n=56)","Histone (n=73)")),
+    region      = factor(region, levels=c("Artery","Vein/Vasculature")),
+    category    = ifelse(grepl("Histone", set), "Histone", "IFN"),
+    signif_label = case_when(
+      p < 1e-10 ~ "***",
+      p < 1e-3  ~ "**",
+      p < 0.05  ~ "*",
+      TRUE      ~ "ns"
+    )
+  )
+
+cat("\n=== Sign test summary ===\n")
+print(summary_df)
+
+# ==== プロット ====
+BASE <- 7
+theme_AR <- function(base=BASE) {
+  theme_bw(base_size=base) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major=element_line(color="grey93", linewidth=0.25),
+        axis.text=element_text(size=base-1, color="black"),
+        axis.title=element_text(size=base, color="black"),
+        plot.title=element_text(size=base+1, face="bold", hjust=0),
+        legend.text=element_text(size=base-1),
+        legend.title=element_text(size=base-1, face="bold"),
+        legend.key.size=unit(0.25, "cm"),
+        strip.text=element_text(size=base-1, face="bold"),
+        strip.background=element_rect(fill="grey95", color=NA),
+        axis.line=element_line(linewidth=0.3),
+        panel.border=element_rect(linewidth=0.3, color="grey50"))
+}
+
+p <- ggplot(summary_df,
+            aes(x=region, y=pct_pos, fill=category)) +
+  geom_col(width=0.6, color="grey30", linewidth=0.3) +
+  geom_text(aes(label=sprintf("%d/%d\n%s", n_pos, n_total, signif_label)),
+            vjust=-0.2, size=2.3, lineheight=0.85) +
+  geom_hline(yintercept=50, linetype="dashed",
+             color="grey50", linewidth=0.3) +
+  facet_wrap(~ set) +
+  scale_fill_manual(values=c("IFN"     = "#d73027",
+                              "Histone" = "#4575b4"),
+                    guide="none") +
+  scale_y_continuous(limits=c(0, 115), expand=c(0, 0)) +
+  labs(x=NULL, y="% genes higher in CD320+",
+       title="Direction-bias of expression by anti-CD320 seropositivity") +
+  theme_AR() +
+  theme(axis.text.x=element_text(size=6.5))
