@@ -1,0 +1,130 @@
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(tibble)
+  library(patchwork)          # 上下段のパネル結合に使用
+})
+set.seed(1)                    # jitter 再現性
+
+# ==== 設定 ====
+INPUT_RDS  <- "02_se_explored.rds"
+OUTPUT_DIR <- "."
+PAIRED     <- FALSE            # AOIが患者/血管ごとにペア化されているなら TRUE
+TEST       <- "wilcox"         # "wilcox"（既定, 少数例・非正規向き） or "t.test"
+P_ADJUST   <- "BH"             # 多重比較補正法（p.adjust の method）。補正なしは "none"
+SHOW_ADJ   <- TRUE             # TRUE: 補正後P(Padj)を表示 / FALSE: 生P を表示
+
+# ==== データ読み込み ====
+se  <- readRDS(INPUT_RDS)
+cd  <- as.data.frame(colData(se))
+mat <- assay(se, "log2")
+
+# artery_bcell と artery_endothelium のみ抽出
+art_only <- cd$Tissue %in% c("artery_bcell", "artery_endothelium")
+cat(sprintf("Artery AOIs: %d\n", sum(art_only)))
+
+# ==== マーカー遺伝子 ====
+bcell_markers <- intersect(c("MS4A1","CD19","CD79A","CD79B"), rownames(mat))
+endo_markers  <- intersect(c("PECAM1","CDH5","VWF","CLDN5"), rownames(mat))
+markers_to_show <- c(bcell_markers, endo_markers)
+cat("B cell markers available:", paste(bcell_markers, collapse=", "), "\n")
+cat("Endothelial markers available:", paste(endo_markers, collapse=", "), "\n")
+
+# ==== 長形式データ ====
+df_marker <- mat[markers_to_show, art_only] |>
+  as.data.frame() |>
+  rownames_to_column("gene") |>
+  pivot_longer(-gene, names_to="AOI_ID", values_to="expr") |>
+  left_join(cd[, c("AOI_ID","Tissue")], by="AOI_ID") |>
+  mutate(gene_type = ifelse(gene %in% bcell_markers,
+                            "B cell markers", "Endothelial markers"),
+         gene   = factor(gene, levels=c(bcell_markers, endo_markers)),
+         Tissue = factor(Tissue,
+                         levels=c("artery_bcell","artery_endothelium"),
+                         labels=c("B cell\nROI","Endo\nROI")))
+
+# ==== 群間比較の検定（遺伝子ごとに B cell ROI vs Endo ROI）====
+run_test <- function(d) {
+  g1 <- d$expr[d$Tissue == "B cell\nROI"]; g1 <- g1[is.finite(g1)]
+  g2 <- d$expr[d$Tissue == "Endo\nROI"];   g2 <- g2[is.finite(g2)]
+  if (length(g1) < 1 || length(g2) < 1) return(NA_real_)
+  tryCatch(
+    if (TEST == "wilcox")
+      wilcox.test(g1, g2, paired=PAIRED, exact=FALSE)$p.value
+    else
+      t.test(g1, g2, paired=PAIRED)$p.value,
+    error = function(e) NA_real_)
+}
+
+genes <- levels(df_marker$gene)
+stats_df <- do.call(rbind, lapply(genes, function(g) {
+  d    <- df_marker[df_marker$gene == g, ]
+  vals <- d$expr[is.finite(d$expr)]
+  data.frame(gene      = g,
+             gene_type = d$gene_type[1],
+             p_raw     = run_test(d),
+             ymin      = if (length(vals)) min(vals) else 0,
+             ymax      = if (length(vals)) max(vals) else 1,
+             stringsAsFactors = FALSE)
+}))
+stats_df$p_adj <- p.adjust(stats_df$p_raw, method = P_ADJUST)
+
+# 注記ラベルと配置（各パネル free_y なので遺伝子ごとの最大値の上）
+rng <- stats_df$ymax - stats_df$ymin
+rng[!is.finite(rng) | rng == 0] <- 1
+stats_df$ypos  <- stats_df$ymax + 0.10 * rng
+stats_df$p_use <- if (SHOW_ADJ) stats_df$p_adj else stats_df$p_raw
+p_lab <- if (SHOW_ADJ) "Padj" else "P"
+stats_df$label <- ifelse(is.na(stats_df$p_use), "P = NA",
+                         ifelse(stats_df$p_use < 0.001, paste0(p_lab, " < 0.001"),
+                                sprintf("%s = %.3f", p_lab, stats_df$p_use)))
+
+cat(sprintf("\n==== Two-group test (%s, paired=%s, adjust=%s) ====\n",
+            TEST, PAIRED, P_ADJUST))
+print(stats_df[, c("gene","gene_type","p_raw","p_adj","label")],
+      row.names = FALSE, digits = 3)
+
+# ==== プロット ====
+BASE <- 7
+theme_AR <- function(base=BASE) {
+  theme_bw(base_size=base) +
+    theme(panel.grid.minor=element_blank(),
+          panel.grid.major=element_line(color="grey93", linewidth=0.25),
+          axis.text=element_text(size=base-1, color="black"),
+          axis.title=element_text(size=base, color="black"),
+          plot.subtitle=element_text(size=base+0.5, face="bold", hjust=0),
+          legend.position="none",
+          strip.text=element_text(size=base-1, face="italic"),
+          strip.background=element_rect(fill="grey95", color=NA),
+          axis.line=element_line(linewidth=0.3),
+          panel.border=element_rect(linewidth=0.3, color="grey50"),
+          panel.spacing=unit(0.15, "lines"))
+}
+
+FILL <- c("B cell\nROI"="#E41A1C", "Endo\nROI"="#FF7F00")
+
+make_panel <- function(genes_sel, sub) {
+  dd <- droplevels(df_marker[df_marker$gene %in% genes_sel, ])
+  ss <- stats_df[stats_df$gene %in% genes_sel, ]
+  ss$gene <- factor(ss$gene, levels = levels(dd$gene))
+  ggplot(dd, aes(x=Tissue, y=expr, fill=Tissue)) +
+    geom_boxplot(outlier.shape=NA, alpha=0.7, width=0.55, linewidth=0.25) +
+    geom_jitter(width=0.12, size=0.9, alpha=0.7) +
+    geom_text(data=ss, aes(x=1.5, y=ypos, label=label),
+              inherit.aes=FALSE, size=2.2) +
+    facet_wrap(~ gene, nrow=1, scales="free_y") +
+    scale_fill_manual(values=FILL) +
+    scale_y_continuous(expand=expansion(mult=c(0.06, 0.18))) +
+    labs(x=NULL, y="log2 expression", subtitle=sub) +
+    theme_AR()
+}
+
+# facet_grid の代わりに 2 枚のパネルを patchwork で上下に結合 → 空欄が出ない
+p_top <- make_panel(bcell_markers, "B cell markers")
+p_bot <- make_panel(endo_markers,  "Endothelial markers")
+
+p <- (p_top / p_bot) +
+  plot_annotation(
+    theme = theme(plot.title = element_text(size=9, face="bold", hjust=0)))
