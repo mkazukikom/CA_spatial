@@ -1,0 +1,79 @@
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+})
+
+# ==== 設定 ====
+INPUT_CSV  <- "DEG_HDBEC_ab_vs_ig.csv"
+OUTPUT_DIR <- "."
+
+# 表示する sensor pathway 遺伝子
+SENSOR_GENES <- c("CGAS","STING1","TBK1","IRF3","MAVS",
+                   "DDX58","IFIH1","RIGI")
+
+# 経路の分類
+pathway_map <- list(
+  "RIG-I/MDA5" = c("DDX58","IFIH1","RIGI","MAVS"),
+  "cGAS-STING" = c("CGAS","STING1"),
+  "Common"     = c("TBK1","IRF3")
+)
+
+# ==== データ読み込み ====
+hd <- read.csv(INPUT_CSV)
+cat(sprintf("Loaded: %d genes\n", nrow(hd)))
+
+sense_df <- hd[hd$gene %in% SENSOR_GENES & !is.na(hd$pvalue), ]
+
+# pathway ラベルを付与
+sense_df$pathway <- sapply(sense_df$gene, function(g) {
+  for (p in names(pathway_map)) {
+    if (g %in% pathway_map[[p]]) return(p)
+  }
+  return("Other")
+})
+
+# 有意性
+sense_df$sig <- ifelse(sense_df$pvalue < 0.05, "*", "")
+
+# logFC順にソート
+sense_df <- sense_df[order(sense_df$log2FoldChange), ]
+sense_df$gene <- factor(sense_df$gene, levels=sense_df$gene)
+
+cat("\nSensor pathway genes found:\n")
+print(sense_df[, c("gene","log2FoldChange","pvalue","pathway")])
+
+# ==== プロット ====
+BASE <- 7
+theme_AR <- function(base=BASE) {
+  theme_bw(base_size=base) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major=element_line(color="grey93", linewidth=0.25),
+        axis.text=element_text(size=base-1, color="black"),
+        axis.title=element_text(size=base, color="black"),
+        plot.title=element_text(size=base+1, face="bold", hjust=0),
+        legend.text=element_text(size=base-1),
+        legend.title=element_text(size=base-1, face="bold"),
+        legend.key.size=unit(0.25, "cm"),
+        axis.line=element_line(linewidth=0.3),
+        panel.border=element_rect(linewidth=0.3, color="grey50"))
+}
+
+p <- ggplot(sense_df,
+            aes(x=log2FoldChange, y=gene, fill=pathway)) +
+  geom_col(width=0.6) +
+  geom_vline(xintercept=0, linewidth=0.3, color="grey40") +
+  geom_text(aes(label=sig),
+            hjust=ifelse(sense_df$log2FoldChange > 0, -0.3, 1.3),
+            size=3, color="#d73027", fontface="bold") +
+  scale_fill_manual(values=c("RIG-I/MDA5" = "#FB8072",
+                              "cGAS-STING" = "#80B1D3",
+                              "Common"     = "#FDB462"),
+                    name=NULL) +
+  labs(x="log2 fold change (anti-CD320 vs control IgG)",
+       y=NULL,
+       title="Sensor pathway genes") +
+  theme_AR() +
+  theme(legend.position="top",
+        legend.text=element_text(size=6),
+        legend.margin=margin(0, 0, -3, 0),
+        axis.text.y=element_text(face="italic", size=7))
