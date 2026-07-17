@@ -1,0 +1,143 @@
+## ---- paths & parameters ----
+args <- commandArgs(trailingOnly = FALSE)
+file_arg <- sub("^--file=", "", args[grep("^--file=", args)])
+HERE <- if (length(file_arg)) dirname(normalizePath(file_arg)) else getwd()
+HUMAN_FASTA <- file.path(HERE, "Q9NPF0.fasta")
+MOUSE_FASTA <- file.path(HERE, "Q9Z1P5.fasta")
+EPITOPE <- c(189L, 198L)     # human, 1-based, inclusive
+WINDOW  <- 9L
+MIN_ID  <- 5L
+
+## ---- helpers ----
+read_fasta <- function(path) {
+  lines <- readLines(path, warn = FALSE)
+  paste(lines[!grepl("^>", lines)], collapse = "")
+}
+
+needleman_wunsch <- function(a, b, match = 1, mismatch = -1, gap = -1) {
+  a <- strsplit(a, "")[[1]]; b <- strsplit(b, "")[[1]]
+  n <- length(a); m <- length(b)
+  S <- matrix(0, n + 1, m + 1)
+  S[, 1] <- (0:n) * gap
+  S[1, ] <- (0:m) * gap
+  for (i in 2:(n + 1)) {
+    for (j in 2:(m + 1)) {
+      sc <- if (a[i - 1] == b[j - 1]) match else mismatch
+      S[i, j] <- max(S[i - 1, j - 1] + sc, S[i - 1, j] + gap, S[i, j - 1] + gap)
+    }
+  }
+  ai <- character(0); bi <- character(0)
+  i <- n + 1; j <- m + 1
+  while (i > 1 && j > 1) {
+    sc <- if (a[i - 1] == b[j - 1]) match else mismatch
+    if (S[i, j] == S[i - 1, j - 1] + sc) {
+      ai <- c(a[i - 1], ai); bi <- c(b[j - 1], bi); i <- i - 1; j <- j - 1
+    } else if (S[i, j] == S[i - 1, j] + gap) {
+      ai <- c(a[i - 1], ai); bi <- c("-", bi); i <- i - 1
+    } else {
+      ai <- c("-", ai); bi <- c(b[j - 1], bi); j <- j - 1
+    }
+  }
+  while (i > 1) { ai <- c(a[i - 1], ai); bi <- c("-", bi); i <- i - 1 }
+  while (j > 1) { ai <- c("-", ai); bi <- c(b[j - 1], bi); j <- j - 1 }
+  list(a = paste(ai, collapse = ""), b = paste(bi, collapse = ""))
+}
+
+dotmatrix <- function(a, b, window, min_id) {
+  a <- strsplit(a, "")[[1]]; b <- strsplit(b, "")[[1]]
+  n <- length(a); m <- length(b)
+  xs <- integer(0); ys <- integer(0)
+  for (i in 1:(n - window + 1)) {
+    wa <- a[i:(i + window - 1)]
+    for (j in 1:(m - window + 1)) {
+      wb <- b[j:(j + window - 1)]
+      if (sum(wa == wb) >= min_id) {
+        xs <- c(xs, i + window %/% 2)   # 1-based centre (matches Python i+win//2+1)
+        ys <- c(ys, j + window %/% 2)
+      }
+    }
+  }
+  list(x = xs, y = ys)
+}
+
+## ---- load ----
+h <- read_fasta(HUMAN_FASTA)
+m <- read_fasta(MOUSE_FASTA)
+es <- EPITOPE[1]; ee <- EPITOPE[2]
+
+## whole-protein identity from global alignment
+aln <- needleman_wunsch(h, m)
+ha <- strsplit(aln$a, "")[[1]]; ma <- strsplit(aln$b, "")[[1]]
+aln_len <- length(ha)
+nident  <- sum(ha == ma)
+pid <- 100 * nident / aln_len
+
+## core motif
+h_core <- substr(h, 191, 197)   # TSLRNAT
+m_core <- substr(m, 187, 193)   # TSFRNVT
+stopifnot(h_core == "TSLRNAT", m_core == "TSFRNVT")
+nid_core <- sum(strsplit(h_core, "")[[1]] == strsplit(m_core, "")[[1]])
+
+## dot plot data
+dm <- dotmatrix(h, m, WINDOW, MIN_ID)
+
+## ---- draw ----
+draw <- function() {
+  layout(matrix(c(1, 2), 1, 2), widths = c(1.15, 1))
+  par(oma = c(0, 0, 2.5, 0))
+  ## Panel A: dot plot
+  par(mar = c(4.2, 4.2, 2.2, 1.0))
+  plot(dm$x, dm$y, pch = 16, cex = 0.35, col = "black",
+       xlim = c(0, nchar(h)), ylim = c(0, nchar(m)),
+       xlab = "Human CD320 residue", ylab = "Mouse CD320 residue",
+       xaxs = "i", yaxs = "i")
+  rect(es, 0, ee, nchar(m), border = "red", lwd = 1.6)
+  text((ee + 6), nchar(m) * 0.72,
+       "major epitope\n(human aa 189-198)", col = "red", cex = 0.8, adj = 0)
+  mtext("A  Whole-protein dot plot", side = 3, line = 0.4, adj = 0, font = 1, cex = 1.05)
+
+  ## Panel B: core-motif alignment
+  par(mar = c(1, 1, 2.2, 1))
+  plot(0, 0, type = "n", xlim = c(0, 1), ylim = c(0, 1),
+       axes = FALSE, xlab = "", ylab = "")
+  mtext("B  Conserved core motif of the major epitope",
+        side = 3, line = 0.4, adj = 0, font = 1, cex = 1.05)
+  hc <- strsplit(h_core, "")[[1]]; mc <- strsplit(m_core, "")[[1]]
+  x0 <- 0.30; y_h <- 0.74; y_m <- 0.52; y_mk <- 0.63; dx <- 0.075
+  for (k in seq_along(hc)) {
+    x <- x0 + (k - 1) * dx
+    ident <- hc[k] == mc[k]
+    col <- if (ident) "#c0392b" else "#888888"
+    text(x, y_h, hc[k], family = "mono", cex = 1.6, col = col, font = 2)
+    text(x, y_m, mc[k], family = "mono", cex = 1.6, col = col, font = 2)
+    text(x, y_mk, if (ident) "|" else "·", family = "mono", cex = 1.2,
+         col = if (ident) "#c0392b" else "#bbbbbb")
+  }
+  text(x0 - 0.04, y_h, "Human 191", cex = 0.85, adj = 1)
+  text(x0 - 0.04, y_m, "Mouse 187", cex = 0.85, adj = 1)
+  text(x0 + 7 * dx, y_h, "197", cex = 0.85, adj = 0)
+  text(x0 + 7 * dx, y_m, "193", cex = 0.85, adj = 0)
+
+  caption <- paste(
+    "Full major epitope (human aa 189-198): SVTSLRNATT",
+    sprintf("Conserved core (7 aa): %d/7 identical (R-N dipeptide and flanking T/S retained).", nid_core),
+    "The epitope is conserved, not identical between species.",
+    sprintf("Whole-protein identity (panel A): %.1f%% (%d/%d).", pid, nident, aln_len),
+    sep = "\n")
+  text(0.02, 0.30, caption, cex = 0.78, adj = c(0, 1), col = "#333333")
+}
+
+out <- file.path(HERE, "FigureS1_CD320_v3_R")
+pdf(paste0(out, ".pdf"), width = 12, height = 5.6); draw()
+title(main = "CD320 orthology between human and mouse", outer = TRUE, line = 0.4, cex.main = 1.2)
+dev.off()
+png(paste0(out, ".png"), width = 12, height = 5.6, units = "in", res = 150); draw()
+title(main = "CD320 orthology between human and mouse", outer = TRUE, line = 0.4, cex.main = 1.2)
+dev.off()
+
+cat(sprintf("human %d aa; mouse %d aa; epitope %d-%d=%s\n",
+            nchar(h), nchar(m), es, ee, substr(h, es, ee)))
+cat(sprintf("dot plot: window %d, min_id %d; %d dots\n", WINDOW, MIN_ID, length(dm$x)))
+cat(sprintf("whole-protein identity: %d/%d = %.1f%%\n", nident, aln_len, pid))
+cat(sprintf("core human %s vs mouse %s: %d/7 identical\n", h_core, m_core, nid_core))
+cat("wrote", paste0(out, ".pdf/.png"), "\n")
