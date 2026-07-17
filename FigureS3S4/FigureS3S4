@@ -1,0 +1,92 @@
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(tibble)
+})
+
+INPUT_RDS  <- "02_se_explored.rds"
+INPUT_IFN  <- "IFN_core_genes.rds"
+OUTPUT_DIR <- "."
+
+FIG5B_HISTONE <- c("H2BC17","H2AC16","H1-2","H1-4")
+FIG5B_IFN     <- c("IFIT1","MX1","ISG15","STAT1")
+
+col_ab <- c("seronegative"="#4DAF4A",
+            "seropositive"="#984EA3")
+
+se <- readRDS(INPUT_RDS)
+cd <- as.data.frame(colData(se))
+mat <- assay(se, "log2")
+
+se_art  <- se[, se$vessel_class == "artery"]
+cd_art  <- as.data.frame(colData(se_art))
+mat_art <- assay(se_art, "log2")
+
+ifn_obj <- readRDS(INPUT_IFN)
+ifn_core <- ifn_obj$conserved
+
+hist_all <- grep("^H[1234][A-Z0-9]|^H[0-9]-", rownames(mat_art), value=TRUE)
+
+hist_remaining <- setdiff(hist_all, FIG5B_HISTONE)
+ifn_remaining  <- setdiff(intersect(ifn_core, rownames(mat_art)),
+                            FIG5B_IFN)
+
+cat(sprintf("Histone remaining: %d\n", length(hist_remaining)))
+cat(sprintf("IFN remaining:     %d\n", length(ifn_remaining)))
+
+make_boxplot <- function(genes_show, title_text, ncol_panels,
+                          output_prefix, plot_h) {
+  df_h <- mat_art[genes_show, , drop=FALSE] |>
+    as.data.frame() |>
+    rownames_to_column("gene") |>
+    pivot_longer(-gene, names_to="AOI_ID", values_to="expr") |>
+    left_join(cd_art[, c("AOI_ID","Antibody")], by="AOI_ID") |>
+    mutate(
+      gene  = factor(gene, levels=genes_show),
+      CD320 = factor(ifelse(Antibody == "Negative",
+                             "seronegative", "seropositive"),
+                      levels=c("seronegative","seropositive"))
+    )
+
+  BASE <- 7
+  theme_AR <- function(base=BASE) {
+    theme_bw(base_size=base) +
+    theme(panel.grid.minor=element_blank(),
+          panel.grid.major=element_line(color="grey93", linewidth=0.25),
+          axis.text=element_text(size=base-2, color="black"),
+          axis.title=element_text(size=base, color="black"),
+          plot.title=element_text(size=base+1, face="bold", hjust=0),
+          legend.text=element_text(size=base-1),
+          legend.title=element_text(size=base-1, face="bold"),
+          legend.key.size=unit(0.25, "cm"),
+          strip.text=element_text(size=base-2, face="italic"),
+          strip.background=element_rect(fill="grey95", color=NA),
+          axis.line=element_line(linewidth=0.3),
+          panel.border=element_rect(linewidth=0.3, color="grey50"),
+          panel.spacing=unit(0.1, "lines"))
+  }
+
+  p <- ggplot(df_h, aes(x=CD320, y=expr, fill=CD320)) +
+    geom_boxplot(outlier.shape=NA, alpha=0.7, width=0.55, linewidth=0.2) +
+    geom_jitter(width=0.12, size=0.5, alpha=0.7) +
+    facet_wrap(~ gene, ncol=ncol_panels, scales="free_y") +
+    scale_fill_manual(values=col_ab, name="CD320") +
+    labs(x=NULL, y="log2 expression",
+         title=title_text) +
+    theme_AR() +
+    theme(legend.position="top",
+          legend.margin=margin(0, 0, -3, 0),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank())
+
+  ggsave(file.path(OUTPUT_DIR, paste0(output_prefix, ".pdf")),
+         p, width=7.5, height=plot_h, units="in", device="pdf",
+         limitsize=FALSE)
+  ggsave(file.path(OUTPUT_DIR, paste0(output_prefix, ".png")),
+         p, width=7.5, height=plot_h, units="in", dpi=300,
+         limitsize=FALSE)
+
+  cat(sprintf("Saved: %s.pdf / .png\n", output_prefix))
+}
