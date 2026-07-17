@@ -1,0 +1,87 @@
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+})
+
+# ==== 設定 ====
+INPUT_HUMAN <- "DGE_artery_combined_vs_vessel.csv"
+INPUT_MOUSE <- "DEG_BF_CA_vs_HC.csv"
+OUTPUT_DIR  <- "."
+
+# 表示するIFN遺伝子（Top 10）
+IFN_GENES <- c("CXCL10","IFIT1","IFIT3","MX1","ISG15",
+               "USP18","RSAD2","STAT1","IRF7","OAS2")
+
+col_dataset <- c(
+  "Human"  = "#E41A1C",
+  "Mouse"           = "#377EB8"
+)
+
+extract_genes <- function(df, gene_col, fc_col, p_col, genes) {
+  df[toupper(df[[gene_col]]) %in% toupper(genes), ] |>
+    transmute(gene   = toupper(.data[[gene_col]]),
+              logFC  = .data[[fc_col]],
+              pvalue = .data[[p_col]])
+}
+
+# ==== データ読み込み ====
+cat("=== Step 1: Load DEG results ===\n")
+ga <- read.csv(INPUT_HUMAN)
+bf <- read.csv(INPUT_MOUSE)
+
+cat(sprintf("Human DEG rows: %d\n", nrow(ga)))
+cat(sprintf("Mouse DEG rows: %d\n", nrow(bf)))
+
+# ==== マージ ====
+plot_df <- bind_rows(
+  extract_genes(ga, "gene", "logFC",          "P.Value", IFN_GENES) |>
+    mutate(dataset = "Human"),
+  extract_genes(bf, "gene", "log2FoldChange", "pvalue",
+                tools::toTitleCase(tolower(IFN_GENES))) |>
+    mutate(gene    = toupper(gene),
+           dataset = "Mouse")
+) |>
+  mutate(
+    dataset     = factor(dataset, levels = names(col_dataset)),
+    gene        = factor(gene,    levels = rev(IFN_GENES)),
+    sig         = ifelse(pvalue < 0.05, "*", ""),
+    logFC_clamp = pmax(-5, pmin(5, logFC))
+  )
+
+cat("\nGenes shown per dataset:\n")
+print(plot_df |> count(dataset))
+
+# ==== プロット ====
+BASE <- 7
+theme_AR <- function(base=BASE) {
+  theme_bw(base_size=base) +
+    theme(panel.grid.minor=element_blank(),
+          panel.grid.major=element_line(color="grey93", linewidth=0.25),
+          axis.text=element_text(size=base-1, color="black"),
+          axis.title=element_text(size=base, color="black"),
+          plot.title=element_text(size=base+1, face="bold", hjust=0),
+          legend.text=element_text(size=base-1),
+          legend.title=element_text(size=base-1, face="bold"),
+          legend.key.size=unit(0.25, "cm"),
+          axis.line=element_line(linewidth=0.3),
+          panel.border=element_rect(linewidth=0.3, color="grey50"))
+}
+
+p <- ggplot(plot_df,
+            aes(x=dataset, y=gene,
+                size=abs(logFC_clamp), fill=logFC_clamp)) +
+  geom_point(shape=21, color="grey40", stroke=0.25, alpha=0.9) +
+  geom_text(aes(label=sig), size=3, vjust=0.7, fontface="bold") +
+  scale_fill_gradient2(low="#4575b4", mid="white", high="#d73027",
+                       midpoint=0, name="log2FC",
+                       limits=c(-5, 5)) +
+  scale_size_continuous(range=c(1, 6),
+                        name="|log2FC|",
+                        breaks=c(1, 2, 3, 4)) +
+  scale_x_discrete(position="top") +
+  labs(x=NULL, y=NULL,
+       title="Top 10 IFN core genes across datasets") +
+  theme_AR() +
+  theme(axis.text.x=element_text(angle=0, hjust=0.5, size=7),
+        axis.text.y=element_text(size=7, face="italic"),
+        legend.position="right")
