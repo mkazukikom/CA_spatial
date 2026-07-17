@@ -1,0 +1,95 @@
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(ggrepel)
+  library(patchwork)
+  library(dplyr)
+})
+
+OUTPUT_DIR <- "."
+
+# 有意性の閾値
+FDR_CUTOFF  <- 0.05
+LFC_CUTOFF  <- 1
+TOP_LABEL_N <- 8
+
+# X軸の統一（見比べやすくするため）
+XLIM_BF <- c(-6, 6)     # BFは強い差
+XLIM_KO <- c(-4, 4)     # KOとMetCblは弱い差
+XLIM_MC <- c(-4, 4)
+
+# ==== プロット関数 ====
+BASE <- 7
+theme_AR <- function(base=BASE) {
+  theme_bw(base_size=base) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major=element_line(color="grey93", linewidth=0.25),
+        axis.text=element_text(size=base-1, color="black"),
+        axis.title=element_text(size=base, color="black"),
+        plot.title=element_text(size=base+1, face="bold", hjust=0),
+        legend.position="none",
+        axis.line=element_line(linewidth=0.3),
+        panel.border=element_rect(linewidth=0.3, color="grey50"))
+}
+
+make_volcano <- function(csv_path, title, xlim) {
+  df <- read.csv(csv_path)
+  df <- df[!is.na(df$pvalue) & !is.na(df$log2FoldChange), ]
+
+  df$color <- case_when(
+    !is.na(df$padj) & df$padj < FDR_CUTOFF & df$log2FoldChange >  LFC_CUTOFF ~ "Up",
+    !is.na(df$padj) & df$padj < FDR_CUTOFF & df$log2FoldChange < -LFC_CUTOFF ~ "Down",
+    TRUE ~ "NS"
+  )
+
+  n_sig <- sum(df$color != "NS")
+  n_up   <- sum(df$color == "Up")
+  n_down <- sum(df$color == "Down")
+
+  cat(sprintf("%s\n", title))
+  cat(sprintf("  Up: %d, Down: %d, Total DEG: %d\n", n_up, n_down, n_sig))
+
+  top_label <- df |>
+    filter(color != "NS") |>
+    arrange(padj) |>
+    head(TOP_LABEL_N)
+
+  p <- ggplot(df, aes(log2FoldChange, -log10(pvalue), color=color)) +
+    geom_point(size=0.5, alpha=0.4) +
+    geom_text_repel(data=top_label, aes(label=gene),
+                    size=2.0, max.overlaps=15, fontface="italic",
+                    segment.size=0.2, box.padding=0.2,
+                    min.segment.length=0) +
+    scale_color_manual(values=c("Up"="#d73027",
+                                  "Down"="#4575b4",
+                                  "NS"="grey75")) +
+    geom_vline(xintercept=c(-LFC_CUTOFF, LFC_CUTOFF),
+               linetype="dashed", color="grey50", linewidth=0.25) +
+    geom_hline(yintercept=-log10(FDR_CUTOFF),
+               linetype="dashed", color="grey50", linewidth=0.25) +
+    annotate("text", x=Inf, y=Inf,
+             label=sprintf("DEG: %d\n(Up: %d, Down: %d)", n_sig, n_up, n_down),
+             size=2.0, hjust=1.05, vjust=1.2, color="grey30") +
+    coord_cartesian(xlim=xlim) +
+    labs(x="log2 fold change",
+         y=expression(-log[10](P)),
+         title=title) +
+    theme_AR()
+
+  return(p)
+}
+
+# ==== 3つのVolcano生成 ====
+p2f <- make_volcano("DEG_BF_CA_vs_HC.csv",
+                     "WT",
+                     XLIM_BF)
+
+p2g <- make_volcano("DEG_ko_cd320_vs_ko_ctrl.csv",
+                     "KO",
+                     XLIM_KO)
+
+p2h <- make_volcano("DEG_wt_cd320metcbl_vs_ctrl_metcbl.csv",
+                     "WT+MetCbl",
+                     XLIM_MC)
+
+# ==== 3並列で保存 ====
+fig <- p2f | p2g | p2h
