@@ -1,0 +1,120 @@
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(ggrepel)
+  library(dplyr)
+})
+
+# ==== 設定 ====
+INPUT_CSV  <- "DGE_antibody_pos_vs_neg_artery.csv"
+INPUT_IFN  <- "IFN_core_genes.rds"
+OUTPUT_DIR <- "."
+
+# 有意性の閾値
+P_CUTOFF   <- 0.05
+LFC_CUTOFF <- 1
+
+# ラベル数
+N_HISTONE_LABEL <- 8
+N_IFN_LABEL     <- 8
+N_OTHER_LABEL   <- 5
+
+# ==== データ読み込み ====
+tt <- read.csv(INPUT_CSV)
+cat(sprintf("Loaded: %d genes\n", nrow(tt)))
+cat("Columns:", paste(colnames(tt), collapse=", "), "\n")
+
+# ヒストン遺伝子リスト
+hist_genes <- grep("^H[1234][A-Z0-9]|^H[0-9]-", tt$gene, value=TRUE)
+cat(sprintf("Histone genes: %d\n", length(hist_genes)))
+
+# IFN core遺伝子リスト
+ifn_obj <- readRDS(INPUT_IFN)
+ifn_core <- ifn_obj$conserved
+ifn_in_data <- intersect(ifn_core, tt$gene)
+cat(sprintf("IFN core genes in data: %d / %d\n",
+             length(ifn_in_data), length(ifn_core)))
+
+# ==== 分類 ====
+tt$category <- case_when(
+  tt$gene %in% hist_genes                          ~ "Histone",
+  tt$gene %in% ifn_in_data                         ~ "IFN core",
+  tt$P.Value < P_CUTOFF & tt$logFC >  LFC_CUTOFF   ~ "Up in CD320+",
+  tt$P.Value < P_CUTOFF & tt$logFC < -LFC_CUTOFF   ~ "Up in CD320−",
+  TRUE                                              ~ "NS"
+)
+
+# ==== ラベル用トップ遺伝子 ====
+hist_labels <- tt |>
+  filter(category == "Histone",
+         P.Value < P_CUTOFF, logFC > 0) |>
+  arrange(P.Value) |>
+  head(N_HISTONE_LABEL)
+
+ifn_labels <- tt |>
+  filter(category == "IFN core") |>
+  arrange(P.Value) |>
+  head(N_IFN_LABEL)
+
+other_labels <- tt |>
+  filter(category %in% c("Up in CD320+","Up in CD320−"),
+         abs(logFC) > LFC_CUTOFF) |>
+  arrange(P.Value) |>
+  head(N_OTHER_LABEL)
+
+all_labels <- bind_rows(hist_labels, ifn_labels, other_labels)
+
+# ==== プロット順序（背景 → 前景の順） ====
+# NS → Up/Down → IFN core → Histone の順に描画
+tt$category <- factor(tt$category,
+                       levels=c("NS","Up in CD320+","Up in CD320−",
+                                "IFN core","Histone"))
+tt <- tt[order(tt$category), ]
+
+# ==== プロット ====
+BASE <- 7
+theme_AR <- function(base=BASE) {
+  theme_bw(base_size=base) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major=element_line(color="grey93", linewidth=0.25),
+        axis.text=element_text(size=base-1, color="black"),
+        axis.title=element_text(size=base, color="black"),
+        plot.title=element_text(size=base+1, face="bold", hjust=0),
+        legend.text=element_text(size=base-1),
+        legend.title=element_text(size=base-1, face="bold"),
+        legend.key.size=unit(0.25, "cm"),
+        axis.line=element_line(linewidth=0.3),
+        panel.border=element_rect(linewidth=0.3, color="grey50"))
+}
+
+col_map <- c("NS"          = "grey75",
+              "Up in CD320+"= "#984EA3",
+              "Up in CD320−"= "#4DAF4A",
+              "IFN core"    = "#d73027",
+              "Histone"     = "#4575b4")
+
+size_map <- c("NS"=0.4, "Up in CD320+"=0.5, "Up in CD320−"=0.5,
+              "IFN core"=0.9, "Histone"=0.9)
+
+p <- ggplot(tt, aes(logFC, -log10(P.Value),
+                     color=category, size=category)) +
+  geom_point(alpha=0.55) +
+  geom_text_repel(data=all_labels,
+                  aes(label=gene),
+                  size=2.2, max.overlaps=30, fontface="italic",
+                  segment.size=0.2, box.padding=0.2,
+                  min.segment.length=0,
+                  color="grey20",
+                  inherit.aes=TRUE,
+                  show.legend=FALSE) +
+  scale_color_manual(values=col_map, name=NULL) +
+  scale_size_manual(values=size_map, guide="none") +
+  geom_vline(xintercept=c(-LFC_CUTOFF, LFC_CUTOFF),
+             linetype="dashed", color="grey50", linewidth=0.25) +
+  geom_hline(yintercept=-log10(P_CUTOFF),
+             linetype="dashed", color="grey50", linewidth=0.25) +
+  labs(x="log2 fold change (seropositive vs seronegative)",
+       y=expression(-log[10](P)),
+       title="seropositive vs seronegative (artery ROIs)") +
+  theme_AR() +
+  theme(legend.position="top",
+        legend.margin=margin(0, 0, -3, 0))
