@@ -1,0 +1,167 @@
+## Figure1C_PCA.R
+## Standalone script to reproduce Figure 1C (PCA of all AOIs)
+## Input: 02_se_explored.rds (SummarizedExperiment with log2-normalized counts)
+## Output: Figure1C_PCA.pdf / .png
+
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(ggplot2)
+})
+
+# ==== 設定 ====
+INPUT_RDS  <- "02_se_explored.rds"      # 同じディレクトリに置く
+OUTPUT_DIR <- "."                         # 出力先
+SEED       <- 20260509
+
+# 色設定（Fig 1と統一）
+col_tissue <- c("artery_bcell"="#E41A1C",
+                "artery_endothelium"="#FF7F00",
+                "vein"="#377EB8",
+                "vasculature"="#4DAF4A")
+
+# ==== データ読み込み ====
+se <- readRDS(INPUT_RDS)
+cd <- as.data.frame(colData(se))
+mat <- assay(se, "log2")
+
+cat(sprintf("Loaded: %d genes × %d AOIs\n", nrow(mat), ncol(mat)))
+cat(sprintf("Tissue types: %s\n",
+             paste(unique(cd$Tissue), collapse=", ")))
+cat(sprintf("Antibody groups: %s\n",
+             paste(unique(cd$Antibody), collapse=", ")))
+
+# ==== PCA ====
+set.seed(SEED)
+pca_res <- prcomp(t(mat), center=TRUE, scale.=FALSE)
+ve <- round(summary(pca_res)$importance[2, 1:2] * 100, 1)
+pca_df <- as.data.frame(pca_res$x[, 1:2]) |> cbind(cd)
+
+# ==== プロット ====
+BASE <- 7
+theme_AR <- function(base=BASE) {
+  theme_bw(base_size=base) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major=element_line(color="grey93", linewidth=0.25),
+        axis.text=element_text(size=base-1, color="black"),
+        axis.title=element_text(size=base, color="black"),
+        plot.title=element_text(size=base+1, face="bold", hjust=0),
+        legend.text=element_text(size=base-1),
+        legend.title=element_text(size=base-1, face="bold"),
+        legend.key.size=unit(0.25,"cm"),
+        axis.line=element_line(linewidth=0.3),
+        panel.border=element_rect(linewidth=0.3, color="grey50"))
+}
+
+p <- ggplot(pca_df, aes(PC1, PC2, color=Tissue, shape=Antibody)) +
+  geom_point(size=2.5, alpha=0.9, stroke=0.4) +
+  scale_color_manual(values=col_tissue, name="ROI",
+    labels=c("Artery (B cell)","Artery (Endo)","Vein","Vasculature")) +
+  scale_shape_manual(values=c("Negative"=16, "Positive"=17),
+                     name="CD320 Ab") +
+  labs(x=sprintf("PC1 (%.1f%%)", ve[1]),
+       y=sprintf("PC2 (%.1f%%)", ve[2])) +
+  theme_AR() +
+  theme(legend.position="right", legend.box="vertical",
+        legend.spacing.y=unit(0.05, "cm"))
+
+# ==== 保存 ====
+ggsave(file.path(OUTPUT_DIR, "Figure1C_PCA.pdf"),
+       p, width=4.5, height=3.5, units="in", device="pdf")
+ggsave(file.path(OUTPUT_DIR, "Figure1C_PCA.png"),
+       p, width=4.5, height=3.5, units="in", dpi=300)
+
+cat("Saved: Figure1C_PCA.pdf / .png\n")
+
+
+## Figure1C_PCA_labeled.R
+## Standalone script to reproduce Figure 1C (PCA of all AOIs) WITH patient labels
+## Input: 02_se_explored.rds
+## Output: Figure1C_PCA_labeled.pdf / .png
+
+suppressPackageStartupMessages({
+  library(SummarizedExperiment)
+  library(ggplot2)
+  library(ggrepel)
+  library(dplyr)
+})
+
+# ==== 設定 ====
+INPUT_RDS  <- "02_se_explored.rds"
+OUTPUT_DIR <- "."
+SEED       <- 20260509
+
+# 患者ID → ラベル マッピング
+patient_label_map <- c(
+  "10567" = "P1",
+  "6895"  = "P2",
+  "7928"  = "P3",
+  "9489"  = "N1",
+  "6580"  = "N2",
+  "6873"  = "N3"
+)
+
+# 色設定
+col_tissue <- c("artery_bcell"="#E41A1C",
+                "artery_endothelium"="#FF7F00",
+                "vein"="#377EB8",
+                "vasculature"="#4DAF4A")
+
+# ==== データ読み込み ====
+se <- readRDS(INPUT_RDS)
+cd <- as.data.frame(colData(se))
+mat <- assay(se, "log2")
+
+# 患者ラベルを追加
+cd$patient_label <- patient_label_map[as.character(cd$Patient_ID)]
+cat("Patient label mapping:\n")
+print(unique(cd[, c("Patient_ID","Antibody","patient_label")]))
+
+# ==== PCA ====
+set.seed(SEED)
+pca_res <- prcomp(t(mat), center=TRUE, scale.=FALSE)
+ve <- round(summary(pca_res)$importance[2, 1:2] * 100, 1)
+pca_df <- as.data.frame(pca_res$x[, 1:2]) |> cbind(cd)
+
+# ==== プロット ====
+BASE <- 7
+theme_AR <- function(base=BASE) {
+  theme_bw(base_size=base) +
+    theme(panel.grid.minor=element_blank(),
+          panel.grid.major=element_line(color="grey93", linewidth=0.25),
+          axis.text=element_text(size=base-1, color="black"),
+          axis.title=element_text(size=base, color="black"),
+          plot.title=element_text(size=base+1, face="bold", hjust=0),
+          legend.text=element_text(size=base-1),
+          legend.title=element_text(size=base-1, face="bold"),
+          legend.key.size=unit(0.25,"cm"),
+          axis.line=element_line(linewidth=0.3),
+          panel.border=element_rect(linewidth=0.3, color="grey50"))
+}
+
+p <- ggplot(pca_df, aes(PC1, PC2, color=Tissue, shape=Antibody)) +
+  geom_point(size=2.5, alpha=0.9, stroke=0.4) +
+  geom_text_repel(aes(label=patient_label),
+                  size=2.2, color="grey20",
+                  segment.size=0.2, segment.color="grey60",
+                  min.segment.length=0.1,
+                  box.padding=0.25,
+                  max.overlaps=Inf,
+                  show.legend=FALSE) +
+  scale_color_manual(values=col_tissue, name="ROI",
+                     labels=c("Artery (B cell)","Artery (Endo)","Vein","Vasculature")) +
+  scale_shape_manual(values=c("Negative"=16, "Positive"=17),
+                     name="CD320 Ab") +
+  labs(x=sprintf("PC1 (%.1f%%)", ve[1]),
+       y=sprintf("PC2 (%.1f%%)", ve[2]),
+       ) +
+  theme_AR() +
+  theme(legend.position="right", legend.box="vertical",
+        legend.spacing.y=unit(0.05, "cm"))
+
+# ==== 保存 ====
+ggsave(file.path(OUTPUT_DIR, "Figure1C_PCA_labeled.pdf"),
+       p, width=5.0, height=3.8, units="in", device="pdf")
+ggsave(file.path(OUTPUT_DIR, "Figure1C_PCA_labeled.png"),
+       p, width=5.0, height=3.8, units="in", dpi=300)
+
+cat("Saved: Figure1C_PCA_labeled.pdf / .png\n")
