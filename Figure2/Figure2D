@@ -1,0 +1,61 @@
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(dplyr)
+  library(stringr)
+})
+
+# ==== 設定 ====
+INPUT_CSV  <- "GSEA_GO_BP_BF_CA_vs_HC.csv"
+OUTPUT_DIR <- "."
+
+TOP_N       <- 10
+PVAL_CUTOFF <- 0.05
+WRAP_WIDTH  <- 28
+
+# ==== データ読み込み ====
+go <- read.csv(INPUT_CSV)
+cat(sprintf("Loaded: %d GO BP terms\n", nrow(go)))
+cat("Columns:", paste(colnames(go), collapse=", "), "\n")
+
+# 前処理
+go_top <- go |>
+  filter(!is.na(pvalue), pvalue < PVAL_CUTOFF) |>
+  arrange(pvalue) |>
+  head(TOP_N) |>
+  mutate(Description = str_wrap(Description, WRAP_WIDTH),
+         direction   = ifelse(NES > 0, "Activated in CA", "Suppressed in CA"))
+
+cat(sprintf("\nTop %d GO BP terms:\n", nrow(go_top)))
+print(go_top[, c("Description","NES","pvalue")])
+
+# ==== プロット ====
+BASE <- 7
+theme_AR <- function(base=BASE) {
+  theme_bw(base_size=base) +
+  theme(panel.grid.minor=element_blank(),
+        panel.grid.major=element_line(color="grey93", linewidth=0.25),
+        axis.text=element_text(size=base-1, color="black"),
+        axis.title=element_text(size=base, color="black"),
+        plot.title=element_text(size=base+1, face="bold", hjust=0),
+        legend.text=element_text(size=base-1),
+        legend.title=element_text(size=base-1, face="bold"),
+        legend.key.size=unit(0.25,"cm"),
+        axis.line=element_line(linewidth=0.3),
+        panel.border=element_rect(linewidth=0.3, color="grey50"))
+}
+
+p <- ggplot(go_top,
+            aes(x=reorder(Description, NES),
+                y=NES, fill=-log10(pvalue))) +
+  geom_col(width=0.7) +
+  coord_flip() +
+  scale_fill_gradient(low="#fee090", high="#d73027",
+                       name="-log10(p)") +
+  geom_hline(yintercept=0, linewidth=0.3, color="grey40") +
+  labs(x=NULL, y="NES",
+       title="GO BP (WT)") +
+  theme_AR() +
+  theme(axis.text.y=element_text(size=6),
+        legend.position="right",
+        legend.text=element_text(size=5.5),
+        legend.title=element_text(size=6))
