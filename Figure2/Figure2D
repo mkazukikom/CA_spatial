@@ -1,34 +1,90 @@
 suppressPackageStartupMessages({
+  library(clusterProfiler)
+  library(org.Mm.eg.db)
+  library(AnnotationDbi)
   library(ggplot2)
   library(dplyr)
   library(stringr)
 })
 
 # ==== 設定 ====
-INPUT_CSV  <- "GSEA_GO_BP_BF_CA_vs_HC.csv"
-OUTPUT_DIR <- "."
+INPUT_DEG_CSV <- "DEG_BF_CA_vs_HC.csv"
+OUTPUT_DIR    <- "."
 
-TOP_N       <- 10
-PVAL_CUTOFF <- 0.05
-WRAP_WIDTH  <- 28
+TOP_N          <- 10
+PVAL_CUTOFF    <- 0.05
+WRAP_WIDTH     <- 28
+GSEGO_MIN_SIZE <- 10
+GSEGO_MAX_SIZE <- 500
+SEED           <- 20260509
 
-# ==== データ読み込み ====
-go <- read.csv(INPUT_CSV)
-cat(sprintf("Loaded: %d GO BP terms\n", nrow(go)))
-cat("Columns:", paste(colnames(go), collapse=", "), "\n")
+# ==== Step 1: DEG読み込み ====
+cat("=== Step 1: Load DEG ===\n")
+deg <- read.csv(INPUT_DEG_CSV)
+cat(sprintf("DEG rows: %d\n", nrow(deg)))
+cat("Columns:", paste(colnames(deg), collapse=", "), "\n")
 
-# 前処理
-go_top <- go |>
+deg <- deg[!is.na(deg$pvalue) & !is.na(deg$log2FoldChange), ]
+
+# ==== Step 2: マウス SYMBOL → ENTREZID ====
+cat("\n=== Step 2: SYMBOL → ENTREZID (mouse) ===\n")
+map <- AnnotationDbi::select(
+  org.Mm.eg.db,
+  keys       = unique(deg$gene),
+  keytype    = "SYMBOL",
+  columns    = c("SYMBOL","ENTREZID")
+)
+map <- map[!is.na(map$ENTREZID) & !duplicated(map$SYMBOL), ]
+deg2 <- merge(deg, map, by.x="gene", by.y="SYMBOL")
+cat(sprintf("After ENTREZ mapping: %d genes\n", nrow(deg2)))
+
+# ==== Step 3: rank statistic ====
+cat("\n=== Step 3: Build ranked stats ===\n")
+stat <- deg2$log2FoldChange * (-log10(deg2$pvalue + 1e-300))
+names(stat) <- as.character(deg2$ENTREZID)
+stat <- sort(stat[!duplicated(names(stat))], decreasing=TRUE)
+cat(sprintf("Ranked genes: %d\n", length(stat)))
+cat(sprintf("Range: %.2f to %.2f\n", min(stat), max(stat)))
+
+# ==== Step 4: gseGO (GO BP) ====
+cat("\n=== Step 4: Run gseGO (BP) ===\n")
+set.seed(SEED)
+ego <- gseGO(
+  geneList      = stat,
+  OrgDb         = org.Mm.eg.db,
+  ont           = "BP",
+  minGSSize     = GSEGO_MIN_SIZE,
+  maxGSSize     = GSEGO_MAX_SIZE,
+  pvalueCutoff  = 1,
+  verbose       = FALSE,
+  seed          = TRUE
+)
+
+ego_df <- as.data.frame(ego)
+cat(sprintf("\nSignificant GO BP terms (p.adjust<0.05): %d\n",
+             sum(ego_df$p.adjust < 0.05, na.rm=TRUE)))
+cat("Top 10:\n")
+print(head(ego_df[, c("Description","NES","pvalue","p.adjust")], 10))
+
+# ==== Step 5: 結果保存 ====
+write.csv(ego_df,
+          file.path(OUTPUT_DIR, "GSEA_GO_BP_BF_CA_vs_HC.csv"),
+          row.names=FALSE)
+cat("\nSaved: GSEA_GO_BP_BF_CA_vs_HC.csv\n")
+
+# ==== Step 6: Figure 2J 作成 ====
+cat("\n=== Step 6: Build Figure 2J ===\n")
+
+go_top <- ego_df |>
   filter(!is.na(pvalue), pvalue < PVAL_CUTOFF) |>
   arrange(pvalue) |>
   head(TOP_N) |>
   mutate(Description = str_wrap(Description, WRAP_WIDTH),
          direction   = ifelse(NES > 0, "Activated in CA", "Suppressed in CA"))
 
-cat(sprintf("\nTop %d GO BP terms:\n", nrow(go_top)))
-print(go_top[, c("Description","NES","pvalue")])
+cat(sprintf("Top %d GO BP terms for plot:\n", nrow(go_top)))
+print(go_top[, c("Description","NES","pvalue","p.adjust")])
 
-# ==== プロット ====
 BASE <- 7
 theme_AR <- function(base=BASE) {
   theme_bw(base_size=base) +
@@ -39,7 +95,7 @@ theme_AR <- function(base=BASE) {
         plot.title=element_text(size=base+1, face="bold", hjust=0),
         legend.text=element_text(size=base-1),
         legend.title=element_text(size=base-1, face="bold"),
-        legend.key.size=unit(0.25,"cm"),
+        legend.key.size=unit(0.25, "cm"),
         axis.line=element_line(linewidth=0.3),
         panel.border=element_rect(linewidth=0.3, color="grey50"))
 }
@@ -53,7 +109,7 @@ p <- ggplot(go_top,
                        name="-log10(p)") +
   geom_hline(yintercept=0, linewidth=0.3, color="grey40") +
   labs(x=NULL, y="NES",
-       title="GO BP (WT)") +
+       title="Figure 2J  GO Biological Process GSEA (Mouse CA vs HC)") +
   theme_AR() +
   theme(axis.text.y=element_text(size=6),
         legend.position="right",
